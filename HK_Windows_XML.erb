@@ -1,0 +1,269 @@
+<%#
+kind: provision
+name: HK_Windows_XML
+model: ProvisioningTemplate
+oses:
+- Windows
+# Parameters are expected to be set in Foreman (globally or per group/host)
+params:
+- windowsLicenseKey: ABCDE-ABCDE-ABCDE-ABCDE-ABCDE # Valid Windows license key
+- windowsLicenseOwner: Company, INC # Legal owner of the Windows license key
+- systemLocale: en-US
+- systemUILanguage: en-US
+- systemTimeZone: GMT Standard Time #see https://msdn.microsoft.com/en-us/library/ms912391(v=winembedded.11).aspx
+- wimImageName = Windows 10 Pro # Image name seems only necessary if the WIM contains more than one image
+-%>
+<% winAfterCommands = [
+    { description: 'Stage notification. Start Late Installation',
+      order: '1',
+      userinput: 'false',
+      exec:  'cmd.exe /c powershell -command wget.exe '+host_param("stage")+@host.shortname+'/stage/33/skey/'+host_param("skey")+'/uid/'+host_param("ugid")+'/ticket/'+host_param("ticket").to_s
+    },
+    { description: 'Disable password expiration for Admin user',
+      order: '2',
+      userinput: 'false',
+      exec: 'cmd.exe /c wmic useraccount where &quot;name=&apos;Administrator&apos;&quot; set PasswordExpires=FALSE'
+    },
+    { description: 'Set final configuration.ps1 (HK_Windows_Script)',
+      order: '3',
+      userinput: 'false',
+      exec: 'cmd.exe /c powershell c:\final_configuration.ps1'
+    },
+    { description: 'NEW final stage',
+      order: '4',
+      userinput: 'false',
+      exec: 'cmd.exe /c powershell -command wget.exe '+host_param('stage')+@host.shortname+'/stage/34/skey/'+host_param('skey')+'/uid/'+host_param('ugid')+'/ticket/'+host_param('ticket').to_s+''
+    }
+  ]
+  if host_param_true?('autoActivation') or host_param_true?('datacenter')
+  winAfterCommands << {
+    description: 'Windows activation',
+    order: '5',
+    userinput: 'false',
+    exec: 'cmd.exe /c powershell -command "& { slmgr.vbs  /ipk //B '+host_param('windowsLicenseKey')+' ; sleep 10; slmgr.vbs /ato }"'
+  }
+  end
+  if @host.model.to_s == 'ovirt'
+  winAfterCommands << {
+    description: 'Ovirt Guest tools installation',
+    order: '6',
+    userinput: 'false',
+    exec: 'cmd.exe /c powershell C:\ovirt_ga.ps1'
+  }
+  end
+  if @host.model.to_s == 'vmware'
+  winAfterCommands << {
+    description: 'ESXi Guest tools installation',
+    order: '6',
+    userinput: 'false',
+    exec: 'cmd.exe /c powershell C:\esxi_gt.ps1'
+  }
+  end
+  if host_param('postinstallscript')
+    winAfterCommands << {
+      description: 'PostInstall User script',
+      order: '7',
+      userinput: 'false',
+      exec: 'cmd.exe /c powershell C:\post_install_script.ps1'
+    }
+  end
+  if host_param('postinstallcallback')
+  winAfterCommands << {
+    description: 'PostInstall User callback',
+    order: '8',
+    userinput: 'false',
+    exec: 'cmd.exe /c powershell -command wget.exe '+host_param('postinstallcallback')+''
+  }
+  end
+  if host_param('ticket').to_s.length>0
+  winAfterCommands << {
+    description: 'CleanUP temporary files',
+    order: '9',
+    userinput: 'false',
+    exec: 'cmd.exe /c powershell -command "& { get-childitem -Path C:\ | where-object Name -Match \'built|index|iso|redhat|setup|final_configuration.ps1|esxi_gt.ps1|ovirt_ga.ps1/|'+host_param('ticket').to_s+'\' | remove-item -Recurse }"'
+  }
+  else
+  winAfterCommands << {
+    description: 'CleanUP temporary files',
+    order: '9',
+    userinput: 'false',
+    exec: 'cmd.exe /c powershell -command "& { get-childitem -Path C:\ | where-object Name -Match \'built|index|iso|redhat|setup|final_configuration.ps1|esxi_gt.ps1|ovirt_ga.ps1/\' | remove-item -Recurse }"'
+  }
+  end
+  if @host.operatingsystem.major.to_i == 2012
+  winAfterCommands << {
+    description: 'Run explorer',
+    order: '10',
+    userinput: 'false',
+    exec: 'explorer.exe'
+  }
+  end
+-%>
+<%
+  system_locale = host_param('systemLocale') ? host_param('systemLocale') : 'en-US'
+  system_ui_lang = host_param('systemUILanguage') ? host_param('systemUILanguage') : 'en-US'
+  setup_ui_lang = 'en-US'
+  system_timezone = host_param('systemTimeZone') ? host_param('systemTimeZone') : 'GMT Standard Time'
+-%>
+<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <servicing></servicing>
+  <settings pass="offlineServicing">
+    <component name="Microsoft-Windows-LUA-Settings" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <EnableLUA>false</EnableLUA>
+    </component>
+  </settings>
+  <settings pass="windowsPE">
+    <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <ImageInstall>
+        <OSImage>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/NAME</Key>
+              <Value><%= host_param('wimImageName') -%></Value>
+            </MetaData>
+          </InstallFrom>
+<% unless host_param_true?('manual_choice_dsk') -%>
+          <InstallToAvailablePartition>true</InstallToAvailablePartition>
+<% end -%>
+          <WillShowUI>OnError</WillShowUI>
+        </OSImage>
+      </ImageInstall>
+      <UserData>
+        <AcceptEula>true</AcceptEula>
+<% if host_param('windowsLicenseKey').to_s.length>0 && @host.operatingsystem.name.match(/essent*/) -%>
+         <ProductKey><Key><%= host_param('windowsLicenseKey') -%></Key></ProductKey>
+<% end -%>
+      </UserData>
+    </component>
+    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <SetupUILanguage>
+        <UILanguage><%= setup_ui_lang %></UILanguage>
+      </SetupUILanguage>
+      <InputLocale><%= system_locale %></InputLocale>
+      <SystemLocale><%= system_locale %></SystemLocale>
+      <UILanguageFallback><%= setup_ui_lang %></UILanguageFallback>
+      <UILanguage><%= system_ui_lang %></UILanguage>
+      <UserLocale><%= system_locale %></UserLocale>
+    </component>
+  </settings>
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <InputLocale><%= system_locale %></InputLocale>
+      <SystemLocale><%= system_locale %></SystemLocale>
+      <UILanguageFallback><%= setup_ui_lang %></UILanguageFallback>
+      <UILanguage><%= system_ui_lang %></UILanguage>
+      <UserLocale><%= system_locale %></UserLocale>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <UserAccounts>
+        <AdministratorPassword>
+          <PlainText>true</PlainText>
+          <Value><%= host_param('password') %></Value>
+        </AdministratorPassword>
+      </UserAccounts>
+<% if host_param('windowsLicenseOwner') -%>
+      <RegisteredOrganization><%= host_param('windowsLicenseOwner') -%></RegisteredOrganization>
+      <RegisteredOwner><%= host_param('windowsLicenseOwner') -%></RegisteredOwner>
+<% end -%>
+      <OOBE>
+        <HideEULAPage>true</HideEULAPage>
+        <NetworkLocation>Work</NetworkLocation>
+        <ProtectYourPC>1</ProtectYourPC>
+        <SkipUserOOBE>true</SkipUserOOBE>
+        <SkipMachineOOBE>true</SkipMachineOOBE>
+        <HideLocalAccountScreen>true</HideLocalAccountScreen>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+      </OOBE>
+      <ShowWindowsLive>false</ShowWindowsLive>
+      <AutoLogon>
+        <Password>
+          <Value><%= host_param('password')%></Value>
+          <PlainText>true</PlainText>
+        </Password>
+        <Enabled>true</Enabled>
+        <Username>Administrator</Username>
+      </AutoLogon>
+      <FirstLogonCommands>
+<% winAfterCommands.each do |command| -%>
+        <SynchronousCommand wcm:action="add">
+          <CommandLine><%= command[:exec] %></CommandLine>
+          <Order><%= command[:order] %></Order>
+          <RequiresUserInput><%= command[:userinput] %></RequiresUserInput>
+          <Description><%= command[:description] %></Description>
+        </SynchronousCommand>
+<% end -%>
+      </FirstLogonCommands>
+    </component>
+  </settings>
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <InputLocale><%= system_locale %></InputLocale>
+      <SystemLocale><%= system_locale %></SystemLocale>
+      <UILanguageFallback><%= setup_ui_lang %></UILanguageFallback>
+      <UILanguage><%= system_ui_lang %></UILanguage>
+      <UserLocale><%= system_locale %></UserLocale>
+    </component>
+    <component name="Microsoft-Windows-IE-ESC" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <IEHardenAdmin>false</IEHardenAdmin>
+      <IEHardenUser>false</IEHardenUser>
+    </component>
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <ComputerName><%= @host.shortname -%></ComputerName>
+<% if host_param('windowsLicenseOwner') -%>
+      <RegisteredOrganization><%= host_param('windowsLicenseOwner') -%></RegisteredOrganization>
+      <RegisteredOwner><%= host_param('windowsLicenseOwner') -%></RegisteredOwner>
+<% end -%>
+      <TimeZone><%= system_timezone -%></TimeZone>
+    </component>
+    <component name="Microsoft-Windows-OutOfBoxExperience" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <DoNotOpenInitialConfigurationTasksAtLogon>true</DoNotOpenInitialConfigurationTasksAtLogon>
+    </component>
+    <component name="Microsoft-Windows-Security-SPP-UX" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <SkipAutoActivation>true</SkipAutoActivation>
+    </component>
+    <component name="Microsoft-Windows-TCPIP" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <Interfaces>
+        <Interface wcm:action="add">
+          <Ipv4Settings>
+            <DhcpEnabled>false</DhcpEnabled>
+          </Ipv4Settings>
+          <UnicastIpAddresses>
+            <IpAddress wcm:action="add" wcm:keyValue="0"><%= @host.ip %>/<%= @host.subnet.mask  %></IpAddress>
+          </UnicastIpAddresses>
+          <Routes>
+            <Route wcm:action="add">
+              <NextHopAddress><%= @host.subnet.gateway %></NextHopAddress>
+              <Metric>0</Metric>
+              <Identifier>0</Identifier>
+              <Prefix>0.0.0.0/0</Prefix>
+            </Route>
+          </Routes>
+          <Identifier>0</Identifier>
+        </Interface>
+      </Interfaces>
+    </component>
+    <component name="Networking-MPSSVC-Svc" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <FirewallGroups>
+      <FirewallGroup wcm:action="add" wcm:keyValue="RemoteDesktop">
+         <Active>true</Active>
+          <Group>@FirewallAPI.dll,-28752</Group>
+         <Profile>all</Profile>
+      </FirewallGroup>
+   </FirewallGroups>
+    </component>
+    <component name="Microsoft-Windows-ServerManager-SvrMgrNc" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <DoNotOpenServerManagerAtLogon>true</DoNotOpenServerManagerAtLogon>
+    </component>
+    <component name="Microsoft-Windows-TerminalServices-LocalSessionManager" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <fDenyTSConnections>false</fDenyTSConnections>
+    </component>
+    <component name="Microsoft-Windows-TerminalServices-RDP-WinStationExtensions" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <SecurityLayer>1</SecurityLayer>
+      <UserAuthentication>1</UserAuthentication>
+    </component>
+  </settings>
+  <cpi:offlineImage cpi:source="catalog:c:/temp/win10/sources/install_Windows 10.clg" xmlns:cpi="urn:schemas-microsoft-com:cpi" />
+</unattend>
